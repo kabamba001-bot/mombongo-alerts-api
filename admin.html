@@ -3,25 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mombongo — Gestion VIP</title>
+<title>Mombongo — Gestion VIP & Paliers</title>
 <style>
   body{font-family:system-ui,-apple-system,sans-serif;max-width:420px;margin:32px auto;padding:0 16px;background:#f7f4ee;color:#222}
   h1{font-size:20px;margin-bottom:4px}
   p.sub{color:#666;font-size:13px;margin-top:0}
   label{display:block;margin-top:16px;font-size:14px;font-weight:600}
-  input{width:100%;padding:11px;margin-top:5px;border:1px solid #ccc;border-radius:8px;font-size:15px;box-sizing:border-box}
+  input, select{width:100%;padding:11px;margin-top:5px;border:1px solid #ccc;border-radius:8px;font-size:15px;box-sizing:border-box;background:#fff;font-family:inherit}
   button{margin-top:10px;width:100%;padding:13px;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer}
   #btn-search{background:#e3e0d8;color:#222;margin-top:20px}
-  #btn-save{background:#1a7a5e;color:#fff}
+  #btn-save-vip, #btn-save-plan{background:#1a7a5e;color:#fff}
   #result{margin-top:18px;padding:12px;border-radius:8px;font-size:14px;white-space:pre-wrap;display:none;line-height:1.5}
   .ok{background:#e3f6e8;color:#1a7a3e}
   .err{background:#fdeaea;color:#b3261e}
   hr{border:none;border-top:1px solid #e0ddd4;margin:22px 0}
+  h2{font-size:15px;margin:0;}
+  p.section-note{color:#888;font-size:12px;margin:2px 0 0;}
 </style>
 </head>
 <body>
-<h1>Mombongo — Gestion VIP</h1>
-<p class="sub">Vérifie ou modifie le statut VIP d'un utilisateur par email, sans passer par Firebase.</p>
+<h1>Mombongo — Gestion VIP & Paliers</h1>
+<p class="sub">Vérifie ou modifie le statut VIP (legacy) et/ou le palier (Simple/Business/Pro) d'un utilisateur par email, sans passer par Firebase.</p>
 
 <label>Mot de passe admin</label>
 <input type="password" id="secret" placeholder="•••••••••••" autocomplete="off">
@@ -33,15 +35,39 @@
 
 <hr>
 
+<h2>VIP (legacy)</h2>
+<p class="section-note">Ancien système — l'app ne s'en sert plus pour débloquer quoi que ce soit, gardé ici uniquement pour compatibilité. Utilise plutôt la section "Palier" ci-dessous.</p>
 <label>Nouvelle date d'expiration VIP</label>
 <input type="date" id="until">
+<button id="btn-save-vip">✅ Enregistrer le VIP</button>
 
-<button id="btn-save">✅ Enregistrer le VIP</button>
+<hr>
+
+<h2>Palier Mombongo</h2>
+<p class="section-note">C'est CE réglage que l'app utilise réellement pour débloquer Business/Pro.</p>
+<label>Palier</label>
+<select id="plan">
+  <option value="simple">Simple payant</option>
+  <option value="business">Business</option>
+  <option value="pro">Pro</option>
+</select>
+<label>Durée payée</label>
+<select id="days">
+  <option value="7">1 semaine</option>
+  <option value="14">2 semaines</option>
+  <option value="30" selected>1 mois</option>
+  <option value="60">2 mois</option>
+  <option value="90">3 mois</option>
+  <option value="180">6 mois</option>
+  <option value="365">1 an</option>
+</select>
+<button id="btn-save-plan">✅ Activer ce palier</button>
 
 <div id="result"></div>
 
 <script>
 const API = '/api/set-vip';
+const PLAN_LABELS = { simple: 'Simple', business: 'Business', pro: 'Pro' };
 
 function showResult(msg, ok){
   const el = document.getElementById('result');
@@ -50,15 +76,28 @@ function showResult(msg, ok){
   el.style.display = 'block';
 }
 
-async function call(method){
+function describePlan(data){
+  const plan = PLAN_LABELS[data.userPlan] || 'Simple';
+  const status = data.userPlanStatus || 'free';
+  if(status === 'free') return plan + ' (gratuit)';
+  if(status === 'trial') return plan + ' (essai)';
+  if(status === 'active'){
+    const exp = data.userPlanExpiresAt ? new Date(data.userPlanExpiresAt).toLocaleDateString('fr-FR') : '?';
+    return plan + ' (actif jusqu\'au ' + exp + ')';
+  }
+  if(status === 'expired') return plan + ' (expiré)';
+  return plan + ' (' + status + ')';
+}
+
+// method: 'GET' ou 'POST'. params : objet ajouté à la query string en plus de l'email
+// (ex. { until: '2026-09-01' } ou { plan: 'business', days: '30' }).
+async function call(method, params){
   const secret = document.getElementById('secret').value.trim();
   const email = document.getElementById('email').value.trim();
-  const until = document.getElementById('until').value;
-
   if(!secret || !email){ showResult('Mot de passe et email requis.', false); return; }
-  if(method === 'POST' && !until){ showResult("Choisis une date d'expiration.", false); return; }
 
-  const url = API + '?email=' + encodeURIComponent(email) + (method === 'POST' ? '&until=' + until : '');
+  const qs = new URLSearchParams(Object.assign({ email }, params || {}));
+  const url = API + '?' + qs.toString();
 
   try{
     const res = await fetch(url, {
@@ -73,9 +112,13 @@ async function call(method){
       showResult(
         'Compte trouvé ✅\n' +
         'Nom : ' + (data.displayName || '(non renseigné)') + '\n' +
-        "VIP actuellement jusqu'au : " + (data.vipUntil || 'aucun / expiré'),
+        "VIP legacy jusqu'au : " + (data.vipUntil || 'aucun / expiré') + '\n' +
+        'Palier actuel : ' + describePlan(data),
         true
       );
+    } else if(params && params.plan){
+      const expDate = new Date(data.userPlanExpiresAt).toLocaleDateString('fr-FR');
+      showResult('✅ Palier ' + (PLAN_LABELS[data.userPlan] || data.userPlan) + ' activé jusqu\'au ' + expDate + '\npour ' + data.email, true);
     } else {
       showResult('✅ VIP mis à jour jusqu\'au ' + data.vipUntil + '\npour ' + data.email, true);
     }
@@ -85,7 +128,18 @@ async function call(method){
 }
 
 document.getElementById('btn-search').addEventListener('click', () => call('GET'));
-document.getElementById('btn-save').addEventListener('click', () => call('POST'));
+
+document.getElementById('btn-save-vip').addEventListener('click', () => {
+  const until = document.getElementById('until').value;
+  if(!until){ showResult("Choisis une date d'expiration VIP.", false); return; }
+  call('POST', { until });
+});
+
+document.getElementById('btn-save-plan').addEventListener('click', () => {
+  const plan = document.getElementById('plan').value;
+  const days = document.getElementById('days').value;
+  call('POST', { plan, days });
+});
 </script>
 </body>
 </html>
