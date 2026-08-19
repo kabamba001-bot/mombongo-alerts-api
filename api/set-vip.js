@@ -7,12 +7,15 @@
  * GET  ?email=xxx
  *   -> renvoie le palier actuel de ce compte.
  *
- * POST ?email=xxx&plan=business&days=30
+ * POST ?email=xxx&plan=business&date=2026-09-18
  *   -> active un palier Mombongo directement — écrit userPlan,
- *      userPlanStatus:'active', userPlanExpiresAt (maintenant + days jours),
- *      userPlanTrialEndsAt:null. `plan` vaut 'simple', 'business' ou 'pro'.
- *      C'est ce mécanisme que l'app lit réellement pour déterminer ce à
- *      quoi un compte a droit (voir plans.js côté app).
+ *      userPlanStatus:'active', userPlanExpiresAt (fin de journée pour la
+ *      date fournie), userPlanTrialEndsAt:null. `plan` vaut 'simple',
+ *      'business' ou 'pro'. C'est ce mécanisme que l'app lit réellement pour
+ *      déterminer ce à quoi un compte a droit (voir plans.js côté app).
+ *      `date` peut être dans le passé — c'est volontaire : c'est le moyen le
+ *      plus simple de retirer un palier accordé par erreur, sans toucher au
+ *      reste des données du compte (stock, ventes...).
  *
  * L'ancien champ `vipUntil` (VIP legacy) a été entièrement retiré de cet
  * outil — l'app ne le lit plus nulle part depuis le passage complet au
@@ -83,23 +86,27 @@ module.exports = async (req, res) => {
 
     if(req.method === 'POST'){
       const plan = (req.query && req.query.plan) || (req.body && req.body.plan);
-      const days = (req.query && req.query.days) || (req.body && req.body.days);
+      const date = (req.query && req.query.date) || (req.body && req.body.date);
 
       if(!plan){
-        res.status(400).json({ error: "Rien à mettre à jour — fournis 'plan' + 'days'." });
+        res.status(400).json({ error: "Rien à mettre à jour — fournis 'plan' + 'date'." });
         return;
       }
       if(!VALID_PLANS.includes(plan)){
         res.status(400).json({ error: `Palier invalide — attendu : ${VALID_PLANS.join(', ')}` });
         return;
       }
-      const daysNum = parseInt(days, 10);
-      if(!daysNum || daysNum <= 0){
-        res.status(400).json({ error: 'Nombre de jours invalide pour le palier (attendu un entier positif).' });
+      // Format attendu : YYYY-MM-DD. Une date passée est volontairement acceptée
+      // (c'est ce qui permet d'expulser un compte d'un palier accordé par erreur).
+      if(!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)){
+        res.status(400).json({ error: "Date invalide — attendu au format AAAA-MM-JJ." });
         return;
       }
-
-      const expiresAt = Date.now() + daysNum * 24 * 60 * 60 * 1000;
+      const expiresAt = new Date(date + 'T23:59:59').getTime();
+      if(Number.isNaN(expiresAt)){
+        res.status(400).json({ error: "Date invalide." });
+        return;
+      }
       const update = {
         userPlan: plan,
         userPlanStatus: 'active',
