@@ -107,19 +107,19 @@ module.exports = async (req, res) => {
         res.status(400).json({ error: "Date invalide." });
         return;
       }
-      // Le statut est déduit de la date elle-même : une date déjà passée doit
-      // marquer le compte comme expiré, pas seulement lui laisser une date
-      // dans le passé avec un statut 'active' (l'app ne le retirerait alors
-      // jamais réellement du palier payant).
-      const status = expiresAt < Date.now() ? 'expired' : 'active';
+      // IMPORTANT : toujours 'active' ici, même si la date est déjà passée.
+      // L'app ne stocke jamais 'expired' elle-même — c'est plans.js (isPlanExpired)
+      // qui compare userPlanExpiresAt à l'instant présent et rétrograde le compte
+      // en direct. Écrire 'expired' depuis cet outil casserait ce mécanisme (voir
+      // PALIERS.md) : c'est justement le bug qu'on vient de corriger.
       const update = {
         userPlan: plan,
-        userPlanStatus: status,
+        userPlanStatus: 'active',
         userPlanExpiresAt: expiresAt,
         userPlanTrialEndsAt: null
       };
       await userDoc.ref.set(update, { merge: true });
-      res.status(200).json({ ok: true, uid: userDoc.id, email: data.email || email, userPlan: plan, userPlanStatus: status, userPlanExpiresAt: expiresAt });
+      res.status(200).json({ ok: true, uid: userDoc.id, email: data.email || email, userPlan: plan, userPlanStatus: 'active', userPlanExpiresAt: expiresAt });
       return;
     }
 
