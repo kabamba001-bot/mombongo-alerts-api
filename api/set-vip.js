@@ -107,14 +107,19 @@ module.exports = async (req, res) => {
         res.status(400).json({ error: "Date invalide." });
         return;
       }
+      // Le statut est déduit de la date elle-même : une date déjà passée doit
+      // marquer le compte comme expiré, pas seulement lui laisser une date
+      // dans le passé avec un statut 'active' (l'app ne le retirerait alors
+      // jamais réellement du palier payant).
+      const status = expiresAt < Date.now() ? 'expired' : 'active';
       const update = {
         userPlan: plan,
-        userPlanStatus: 'active',
+        userPlanStatus: status,
         userPlanExpiresAt: expiresAt,
         userPlanTrialEndsAt: null
       };
       await userDoc.ref.set(update, { merge: true });
-      res.status(200).json({ ok: true, uid: userDoc.id, email: data.email || email, userPlan: plan, userPlanExpiresAt: expiresAt });
+      res.status(200).json({ ok: true, uid: userDoc.id, email: data.email || email, userPlan: plan, userPlanStatus: status, userPlanExpiresAt: expiresAt });
       return;
     }
 
