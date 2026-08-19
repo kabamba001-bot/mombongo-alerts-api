@@ -113,8 +113,9 @@ async function call(method, params){
     } else {
       const expDate = new Date(data.userPlanExpiresAt).toLocaleDateString('fr-FR');
       const label = PLAN_LABELS[data.userPlan] || data.userPlan;
-      const msg = data.userPlanStatus === 'expired'
-        ? '⛔ Palier ' + label + ' marqué expiré (date choisie : ' + expDate + ')\npour ' + data.email
+      const isPast = data.userPlanExpiresAt < Date.now();
+      const msg = isPast
+        ? '⛔ Palier ' + label + ' enregistré avec expiration le ' + expDate + ' (déjà passée)\npour ' + data.email + '\nLe compte repassera automatiquement en Simple gratuit à la prochaine vérification de l\'app (au plus tard à sa prochaine ouverture).'
         : '✅ Palier ' + label + ' activé jusqu\'au ' + expDate + '\npour ' + data.email;
       showResult(msg, true);
     }
