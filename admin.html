@@ -46,7 +46,6 @@
 <label>Date d'expiration</label>
 <input type="date" id="expdate">
 <button id="btn-save-plan">✅ Activer ce palier</button>
-<button id="btn-expel" style="background:#fdeaea;color:#b3261e;margin-top:8px">⛔ Expulser (date déjà passée)</button>
 
 <div id="result"></div>
 
@@ -113,7 +112,11 @@ async function call(method, params){
       );
     } else {
       const expDate = new Date(data.userPlanExpiresAt).toLocaleDateString('fr-FR');
-      showResult('✅ Palier ' + (PLAN_LABELS[data.userPlan] || data.userPlan) + ' activé jusqu\'au ' + expDate + '\npour ' + data.email, true);
+      const label = PLAN_LABELS[data.userPlan] || data.userPlan;
+      const msg = data.userPlanStatus === 'expired'
+        ? '⛔ Palier ' + label + ' marqué expiré (date choisie : ' + expDate + ')\npour ' + data.email
+        : '✅ Palier ' + label + ' activé jusqu\'au ' + expDate + '\npour ' + data.email;
+      showResult(msg, true);
     }
   }catch(e){
     showResult('Erreur réseau : ' + e.message, false);
@@ -127,15 +130,6 @@ document.getElementById('btn-save-plan').addEventListener('click', () => {
   const date = document.getElementById('expdate').value;
   if(!date){ showResult('Choisis une date d\'expiration.', false); return; }
   call('POST', { plan, date });
-});
-
-document.getElementById('btn-expel').addEventListener('click', () => {
-  const yesterday = new Date();
-  yesterday.setDate(yesterday.getDate() - 1);
-  const dateStr = toDateStr(yesterday);
-  document.getElementById('expdate').value = dateStr;
-  const plan = document.getElementById('plan').value;
-  call('POST', { plan, date: dateStr });
 });
 </script>
 </body>
