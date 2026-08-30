@@ -4,7 +4,20 @@
  * Outil admin pour activer un palier Mombongo (Simple/Business/Pro) sur un
  * compte, sans passer par la console Firebase.
  *
- * GET  ?email=xxx
+ * Recherche par EMAIL ou par NUMÉRO DE TÉLÉPHONE, au choix — le même champ
+ * accepte les deux :
+ *   - Si la valeur contient un "@", traitée comme un email (comportement
+ *     d'origine inchangé : recherche sur le champ "email" du document
+ *     Firestore).
+ *   - Sinon, traitée comme un numéro de téléphone (ex: 0980979141 ou
+ *     243980979141) — résolue directement via Firebase Auth, exactement
+ *     comme reset-phone-code.js dans l'autre dépôt. Plus besoin de taper
+ *     l'email interne "243980979141@phone.mombongo.app" à la main : la
+ *     quasi-totalité des comptes Mombongo sont des comptes téléphone
+ *     (phone-auth.js, seule méthode de connexion), donc c'est la façon la
+ *     plus naturelle de les retrouver.
+ *
+ * GET  ?email=xxx   (ou ?email=0980979141)
  *   -> renvoie le palier actuel de ce compte.
  *
  * POST ?email=xxx&plan=business&date=2026-09-18
@@ -36,12 +49,68 @@ const admin = require('firebase-admin');
 
 const VALID_PLANS = ['simple', 'business', 'pro'];
 
+// Doit rester identique à phone-auth.js et reset-phone-code.js (autre dépôt)
+// — c'est ce qui permet de retrouver le bon compte à partir du seul numéro.
+const PHONE_AUTH_EMAIL_DOMAIN = 'phone.mombongo.app';
+const PHONE_DEFAULT_COUNTRY_CODE = '243';
+
 function initAdmin(){
   if(admin.apps.length) return;
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
   if(!raw) throw new Error('FIREBASE_SERVICE_ACCOUNT manquant dans les variables d\'environnement Vercel.');
   const serviceAccount = JSON.parse(raw);
   admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+}
+
+// Identique à normalizePhoneDigits() dans phone-auth.js / reset-phone-code.js :
+// "0980979141" (format local) et "243980979141" (format international)
+// doivent aboutir à EXACTEMENT le même résultat, sinon le compte n'est pas
+// retrouvé.
+function normalizePhoneDigits(raw){
+  let digits = String(raw || '').replace(/\D/g, '');
+  if(digits.startsWith('00')) digits = digits.slice(2);
+  if(digits.length === 10 && digits.startsWith('0')){
+    digits = PHONE_DEFAULT_COUNTRY_CODE + digits.slice(1);
+  }
+  return digits;
+}
+
+// Retrouve le compte à partir d'un email OU d'un numéro de téléphone — voir
+// le commentaire en tête de fichier. Renvoie soit { uid, data, email, phone },
+// soit { error, status } en cas d'échec (email/numéro manquant ou invalide,
+// aucun compte trouvé, ou plusieurs comptes partageant le même email).
+async function resolveAccount(db, identifierRaw){
+  const identifier = String(identifierRaw || '').trim();
+  if(!identifier) return { error: 'Email ou numéro de téléphone manquant', status: 400 };
+
+  if(identifier.includes('@')){
+    const email = identifier.toLowerCase();
+    const snap = await db.collection('mombongo_users').where('email', '==', email).get();
+    if(snap.empty) return { error: 'Aucun compte trouvé avec cet email', status: 404 };
+    if(snap.size > 1) return { error: `${snap.size} comptes trouvés avec cet email — action annulée par sécurité, vérifie manuellement`, status: 409 };
+    const doc = snap.docs[0];
+    return { uid: doc.id, data: doc.data(), email: doc.data().email || email, phone: null };
+  }
+
+  const digits = normalizePhoneDigits(identifier);
+  if(digits.length < 8){
+    return { error: "Numéro de téléphone invalide — chiffres uniquement, indicatif du pays inclus (ex: 243980979141 ou 0980979141)", status: 400 };
+  }
+  let userRecord;
+  try{
+    userRecord = await admin.auth().getUserByEmail(digits + '@' + PHONE_AUTH_EMAIL_DOMAIN);
+  }catch(e){
+    return { error: `Aucun compte trouvé pour le numéro "${digits}"`, status: 404 };
+  }
+  const docSnap = await db.collection('mombongo_users').doc(userRecord.uid).get();
+  const data = docSnap.exists ? docSnap.data() : {};
+  return {
+    uid: userRecord.uid,
+    data,
+    email: data.email || null,
+    phone: digits,
+    authDisplayName: userRecord.displayName || null
+  };
 }
 
 module.exports = async (req, res) => {
@@ -51,31 +120,26 @@ module.exports = async (req, res) => {
     return;
   }
 
-  const email = ((req.query && req.query.email) || (req.body && req.body.email) || '').trim().toLowerCase();
-  if(!email){ res.status(400).json({ error: 'Email manquant' }); return; }
+  const identifier = (req.query && req.query.email) || (req.body && req.body.email) || '';
 
   try{
     initAdmin();
     const db = admin.firestore();
 
-    const snap = await db.collection('mombongo_users').where('email', '==', email).get();
-    if(snap.empty){
-      res.status(404).json({ error: 'Aucun compte trouvé avec cet email' });
+    const resolved = await resolveAccount(db, identifier);
+    if(resolved.error){
+      res.status(resolved.status).json({ error: resolved.error });
       return;
     }
-    if(snap.size > 1){
-      res.status(409).json({ error: `${snap.size} comptes trouvés avec cet email — action annulée par sécurité, vérifie manuellement` });
-      return;
-    }
-    const userDoc = snap.docs[0];
-    const data = userDoc.data();
+    const { uid, data } = resolved;
 
     if(req.method === 'GET'){
       res.status(200).json({
         ok: true,
-        uid: userDoc.id,
-        email: data.email || null,
-        displayName: data.displayName || null,
+        uid,
+        email: resolved.email,
+        phone: resolved.phone,
+        displayName: data.displayName || resolved.authDisplayName || null,
         userPlan: data.userPlan || 'simple',
         userPlanStatus: data.userPlanStatus || 'free',
         userPlanExpiresAt: data.userPlanExpiresAt || null,
@@ -118,8 +182,16 @@ module.exports = async (req, res) => {
         userPlanExpiresAt: expiresAt,
         userPlanTrialEndsAt: null
       };
-      await userDoc.ref.set(update, { merge: true });
-      res.status(200).json({ ok: true, uid: userDoc.id, email: data.email || email, userPlan: plan, userPlanStatus: 'active', userPlanExpiresAt: expiresAt });
+      await db.collection('mombongo_users').doc(uid).set(update, { merge: true });
+      res.status(200).json({
+        ok: true,
+        uid,
+        email: resolved.email || identifier,
+        phone: resolved.phone,
+        userPlan: plan,
+        userPlanStatus: 'active',
+        userPlanExpiresAt: expiresAt
+      });
       return;
     }
 
