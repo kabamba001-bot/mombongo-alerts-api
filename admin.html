@@ -13,7 +13,9 @@
   button{margin-top:10px;width:100%;padding:13px;border:none;border-radius:8px;font-size:15px;font-weight:600;cursor:pointer}
   #btn-search{background:#e3e0d8;color:#222;margin-top:20px}
   #btn-save-plan{background:#1a7a5e;color:#fff}
-  #result{margin-top:18px;padding:12px;border-radius:8px;font-size:14px;white-space:pre-wrap;display:none;line-height:1.5}
+  #btn-search-phone{background:#e3e0d8;color:#222;margin-top:20px}
+  #btn-reset-code{background:#1a7a5e;color:#fff}
+  #result, #result-security{margin-top:18px;padding:12px;border-radius:8px;font-size:14px;white-space:pre-wrap;display:none;line-height:1.5}
   .ok{background:#e3f6e8;color:#1a7a3e}
   .err{background:#fdeaea;color:#b3261e}
   hr{border:none;border-top:1px solid #e0ddd4;margin:22px 0}
@@ -23,13 +25,13 @@
 </head>
 <body>
 <h1>Mombongo — Gestion des paliers</h1>
-<p class="sub">Vérifie ou active le palier (Simple/Business/Pro) d'un utilisateur par email, sans passer par Firebase.</p>
+<p class="sub">Vérifie ou active le palier (Simple/Business/Pro) d'un utilisateur par email ou numéro de téléphone, sans passer par Firebase.</p>
 
 <label>Mot de passe admin</label>
 <input type="password" id="secret" placeholder="•••••••••••" autocomplete="off">
 
-<label>Email de l'utilisateur</label>
-<input type="email" id="email" placeholder="exemple@gmail.com" autocomplete="off">
+<label>Email ou numéro de téléphone</label>
+<input type="text" id="email" placeholder="exemple@gmail.com ou 0980979141" autocomplete="off">
 
 <button id="btn-search">🔍 Vérifier ce compte</button>
 
@@ -49,12 +51,30 @@
 
 <div id="result"></div>
 
+<hr>
+
+<h2>Connexion &amp; sécurité</h2>
+<p class="section-note">Recherche par numéro de téléphone — c'est ce que le client donne sur WhatsApp.</p>
+<label>Numéro de téléphone</label>
+<input type="tel" id="phone" placeholder="243980979141 ou 0980979141" autocomplete="off">
+<button id="btn-search-phone">🔍 Vérifier ce compte</button>
+
+<label>Nouveau code de connexion</label>
+<input type="text" id="newcode" placeholder="4 à 8 caractères" autocomplete="off">
+<button id="btn-reset-code">🔑 Réinitialiser le code de connexion</button>
+
+<button id="btn-reset-pin" style="background:#b3261e;color:#fff;margin-top:16px">🔓 Réinitialiser le verrouillage (PIN oublié)</button>
+<p class="section-note">Ne "connaît" jamais le PIN (impossible, il n'est jamais stocké côté serveur) — désactive le verrouillage sur TOUS les appareils liés au compte. Le client s'en remet un nouveau ensuite depuis "Compte" dans Mombongo.</p>
+
+<div id="result-security"></div>
+
 <script>
 const API = '/api/set-vip';
+const SECURITY_API = '/api/reset-credentials';
 const PLAN_LABELS = { simple: 'Simple', business: 'Business', pro: 'Pro' };
 
-function showResult(msg, ok){
-  const el = document.getElementById('result');
+function showResult(msg, ok, targetId){
+  const el = document.getElementById(targetId || 'result');
   el.textContent = msg;
   el.className = ok ? 'ok' : 'err';
   el.style.display = 'block';
@@ -85,11 +105,12 @@ function toDateStr(d){
 })();
 
 // method: 'GET' ou 'POST'. params : objet ajouté à la query string en plus de l'email
-// (ex. { plan: 'business', date: '2026-09-18' }).
+// (ex. { plan: 'business', date: '2026-09-18' }). Le champ #email accepte aussi bien
+// un email qu'un numéro de téléphone — c'est api/set-vip.js qui distingue les deux.
 async function call(method, params){
   const secret = document.getElementById('secret').value.trim();
   const email = document.getElementById('email').value.trim();
-  if(!secret || !email){ showResult('Mot de passe et email requis.', false); return; }
+  if(!secret || !email){ showResult('Mot de passe et email/téléphone requis.', false); return; }
 
   const qs = new URLSearchParams(Object.assign({ email }, params || {}));
   const url = API + '?' + qs.toString();
@@ -114,9 +135,10 @@ async function call(method, params){
       const expDate = new Date(data.userPlanExpiresAt).toLocaleDateString('fr-FR');
       const label = PLAN_LABELS[data.userPlan] || data.userPlan;
       const isPast = data.userPlanExpiresAt < Date.now();
+      const who = data.email || data.phone || email;
       const msg = isPast
-        ? '⛔ Palier ' + label + ' enregistré avec expiration le ' + expDate + ' (déjà passée)\npour ' + data.email + '\nLe compte repassera automatiquement en Simple gratuit à la prochaine vérification de l\'app (au plus tard à sa prochaine ouverture).'
-        : '✅ Palier ' + label + ' activé jusqu\'au ' + expDate + '\npour ' + data.email;
+        ? '⛔ Palier ' + label + ' enregistré avec expiration le ' + expDate + ' (déjà passée)\npour ' + who + '\nLe compte repassera automatiquement en Simple gratuit à la prochaine vérification de l\'app (au plus tard à sa prochaine ouverture).'
+        : '✅ Palier ' + label + ' activé jusqu\'au ' + expDate + '\npour ' + who;
       showResult(msg, true);
     }
   }catch(e){
@@ -131,6 +153,52 @@ document.getElementById('btn-save-plan').addEventListener('click', () => {
   const date = document.getElementById('expdate').value;
   if(!date){ showResult('Choisis une date d\'expiration.', false); return; }
   call('POST', { plan, date });
+});
+
+// ---------- Connexion & sécurité (api/reset-credentials.js) ----------
+async function callSecurity(method, params){
+  const secret = document.getElementById('secret').value.trim();
+  const phone = document.getElementById('phone').value.trim();
+  if(!secret || !phone){ showResult('Mot de passe et numéro requis.', false, 'result-security'); return null; }
+
+  const qs = new URLSearchParams(Object.assign({ phone }, params || {}));
+  const url = SECURITY_API + '?' + qs.toString();
+
+  try{
+    const res = await fetch(url, { method, headers: { 'Authorization': 'Bearer ' + secret } });
+    const data = await res.json();
+    if(!res.ok){ showResult('Erreur : ' + (data.error || res.status), false, 'result-security'); return null; }
+    return data;
+  }catch(e){
+    showResult('Erreur réseau : ' + e.message, false, 'result-security');
+    return null;
+  }
+}
+
+document.getElementById('btn-search-phone').addEventListener('click', async () => {
+  const data = await callSecurity('GET');
+  if(!data) return;
+  showResult(
+    'Compte trouvé ✅\n' +
+    'Nom : ' + (data.displayName || '(non renseigné)') + '\n' +
+    'Réinitialisation PIN en attente : ' + (data.appLockResetRequested ? 'oui (pas encore traitée par l\'appareil du client)' : 'non'),
+    true, 'result-security'
+  );
+});
+
+document.getElementById('btn-reset-code').addEventListener('click', async () => {
+  const newCode = document.getElementById('newcode').value.trim();
+  if(!newCode){ showResult('Entre le nouveau code à donner au client.', false, 'result-security'); return; }
+  const data = await callSecurity('POST', { action: 'reset-code', newCode });
+  if(!data) return;
+  showResult('✅ Code de connexion réinitialisé.\nDonne "' + data.newCode + '" au client — il se connecte avec son numéro et ce code exactement.', true, 'result-security');
+});
+
+document.getElementById('btn-reset-pin').addEventListener('click', async () => {
+  if(!confirm('Ça va désactiver le verrouillage par PIN sur TOUS les appareils liés à ce compte. Continuer ?')) return;
+  const data = await callSecurity('POST', { action: 'reset-pin' });
+  if(!data) return;
+  showResult('✅ Réinitialisation demandée — le verrouillage se désactivera automatiquement au prochain accès de chaque appareil lié au compte.', true, 'result-security');
 });
 </script>
 </body>
